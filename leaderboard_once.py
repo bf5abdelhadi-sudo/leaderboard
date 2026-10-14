@@ -74,9 +74,14 @@ def esc(text: str) -> str:
     return re.sub(r"([*_`~|>\\])", r"\\\1", text)
 
 
+def isolate(text: str) -> str:
+    """Keep right-to-left names (Arabic) from scrambling the rest of the line."""
+    return "\u2066" + text + "\u2069"
+
+
 def bar(pct: int, size: int) -> str:
     n = max(0, min(size, round(pct / 100 * size)))
-    return "▰" * n + "▱" * (size - n)
+    return "\u25b0" * n + "\u25b1" * (size - n)
 
 
 def to_int(s: str) -> int:
@@ -84,38 +89,50 @@ def to_int(s: str) -> int:
     return int(d) if d else 0
 
 
+ROWS_PER_FIELD = 8
+
+
 def build_embed(data: dict) -> dict:
     podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
-    lines = []
-    for i, m in enumerate(podium):
-        lines.append(
-            f"{MEDALS[i]} **{esc(m['name'] or '?')}**\n"
-            f"┗ Lvl {m['level']} · **{m['xp']:,} XP** · {bar(m['pct'], 10)} {m['pct']}%"
-        )
-    lines.append("")
-    lines.append("**Other members**")
 
+    # Podium as three side-by-side fields, 2nd - 1st - 3rd, like the website
+    fields = []
+    order = [1, 0, 2] if len(podium) == 3 else list(range(len(podium)))
+    for i in order:
+        m = podium[i]
+        fields.append({
+            "name": f"{MEDALS[i]} {isolate(m['name'] or '?')}"[:256],
+            "value": f"**{m['xp']:,} XP**\nLevel {m['level']}\n`{bar(m['pct'], 8)}` {m['pct']}%",
+            "inline": True,
+        })
+
+    # Everyone else, grouped into tidy blocks
+    rows = []
     for cells in data["rows"]:
         if len(cells) < 4:
             continue
         rank = to_int(cells[0])
-        name = esc(cells[1][:28])
+        name = isolate(esc(cells[1][:28]))
         level = to_int(cells[2])
         xp = to_int(cells[3])
-        pm = re.search(r"(\d+)\s*%", cells[-1])
-        pct = int(pm.group(1)) if pm else 0
-        lines.append(f"`{rank:>2}` **{name}** · Lvl {level} · {xp:,} XP · {bar(pct, 6)} {pct}%")
+        rows.append(f"`{rank:02d}` **{name}** \u00b7 Lvl {level} \u00b7 `{xp:,} XP`")
 
-    description = "\n".join(lines)
-    if len(description) > 4000:
-        description = description[:3990].rsplit("\n", 1)[0]
+    for n in range(0, len(rows), ROWS_PER_FIELD):
+        chunk = rows[n:n + ROWS_PER_FIELD]
+        fields.append({
+            "name": "\U0001F4CB Other members" if n == 0 else "\u200b",
+            "value": "\n".join(chunk)[:1024],
+            "inline": False,
+        })
 
+    members = data["members"] or "?"
     embed = {
-        "title": f"🏆 {data['title'] or 'Leaderboard'}",
+        "title": f"\U0001F3C6 {data['title'] or 'Leaderboard'}",
         "url": LEADERBOARD_URL,
-        "description": description,
+        "description": f"\U0001F465 **{members}** members \u00b7 Ranked by experience",
         "color": COLOR,
-        "footer": {"text": f"Members: {data['members'] or '?'} · Ranked by experience"},
+        "fields": fields,
+        "footer": {"text": "Updates automatically \u00b7 raccoon-bot.com"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     if data.get("avatar"):
