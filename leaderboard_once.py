@@ -18,12 +18,19 @@ FIX = "s => (s||'').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&a
 SCRAPE_JS = """
 () => {
   const fix = %s;
+  const findId = el => {
+    if (!el) return null;
+    const h = el.outerHTML;
+    const m = h.match(/avatars\\/(\\d{17,20})\\//) || h.match(/(?:users|profile|user|member)s?\\/(\\d{17,20})/);
+    return m ? m[1] : null;
+  };
   const h1 = document.querySelector('h1');
   const body = document.body.innerText;
   const mm = body.match(/Members:\\s*(\\d+)/);
 
-  const rows = [...document.querySelectorAll('table tbody tr')].map(tr =>
-    [...tr.querySelectorAll('td')].map(td => fix(td.innerText)));
+  const rows = [...document.querySelectorAll('table tbody tr')].map(tr => ({
+    cells: [...tr.querySelectorAll('td')].map(td => fix(td.innerText)),
+    uid: findId(tr)}));
 
   const levelEls = [...document.querySelectorAll('body *')].filter(e =>
     e.children.length === 0 && /^Lvl\\s*\\d+$/.test(e.textContent.trim()) && !e.closest('table'));
@@ -34,7 +41,13 @@ SCRAPE_JS = """
     let card = row;
     for (let i = 0; i < 4 && card.parentElement && !/%%/.test(card.textContent); i++) card = card.parentElement;
     const pm = card.textContent.match(/(\\d+)%%/);
-    return {level: e.textContent.replace(/\\D/g, ''), xp, name: fix(nameEl ? nameEl.innerText : ''), pct: pm ? +pm[1] : 0};
+    let c = e, uid = null;
+    for (let i = 0; i < 8 && c.parentElement; i++) {
+      c = c.parentElement;
+      if ((c.textContent.match(/Lvl\\s*\\d+/g) || []).length > 1) break;
+      uid = findId(c) || uid;
+    }
+    return {level: e.textContent.replace(/\\D/g, ''), xp, name: fix(nameEl ? nameEl.innerText : ''), pct: pm ? +pm[1] : 0, uid};
   });
 
   const imgs = [...document.querySelectorAll('img')]
@@ -92,45 +105,56 @@ def to_int(s: str) -> int:
 
 
 ROWS_PER_FIELD = 8
+USE_MENTIONS = True   # True: clickable @mentions (needs the member's Discord ID); False: plain names
+
+
+def who(name: str, uid) -> str:
+    """Clickable mention if we have the Discord ID, otherwise the plain name."""
+    if USE_MENTIONS and uid:
+        return f"<@{uid}>"
+    return f"**{ltr(esc(name[:28]))}**"
 
 
 def build_embed(data: dict) -> dict:
     podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
+    places = ["1st", "2nd", "3rd"]
 
-    # Podium as three side-by-side columns: 2nd - 1st - 3rd, like the website
+    # Podium as three side-by-side columns: 2nd - 1st - 3rd, like the website.
+    # (Mentions only render inside field VALUES, so the name goes in the value.)
     fields = []
     order = [1, 0, 2] if len(podium) == 3 else list(range(len(podium)))
     for i in order:
         m = podium[i]
         fields.append({
-            "name": f"{MEDALS[i]}  {ltr(esc(m['name'] or '?'))}"[:256],
+            "name": f"{MEDALS[i]}  {places[i]} place",
             "value": (
+                f"{LRM}{who(m['name'] or '?', m.get('uid'))}\n"
                 f"**{m['xp']:,} XP**\n"
                 f"Level {m['level']}\n"
                 f"`{bar(m['pct'], 8)}` {m['pct']}%\n"
-                "​"
+                "\u200b"
             ),
             "inline": True,
         })
 
-    # Everyone else, in tidy blocks with their own header
     rows = []
-    for cells in data["rows"]:
+    for item in data["rows"]:
+        cells = item["cells"]
         if len(cells) < 4:
             continue
         rank = to_int(cells[0])
-        name = esc(cells[1][:28])
         level = to_int(cells[2])
         xp = to_int(cells[3])
-        line = f"{LRM}`{rank:02d}`   **{ltr(name)}**   ·   Lvl {level}   ·   `{xp:,} XP`{LRM}"
+        line = (f"{LRM}`{rank:02d}`   {who(cells[1], item.get('uid'))}   \u00b7   "
+                f"Lvl {level}   \u00b7   `{xp:,} XP`{LRM}")
         rows.append((rank, line))
 
     for n in range(0, len(rows), ROWS_PER_FIELD):
         chunk = rows[n:n + ROWS_PER_FIELD]
         first, last = chunk[0][0], chunk[-1][0]
         fields.append({
-            "name": f"\U0001F4CB  Ranks {first} – {last}",
-            "value": ("\n".join(line for _, line in chunk) + "\n​")[:1024],
+            "name": f"\U0001F4CB  Ranks {first} \u2013 {last}",
+            "value": ("\n".join(line for _, line in chunk) + "\n\u200b")[:1024],
             "inline": False,
         })
 
@@ -138,10 +162,10 @@ def build_embed(data: dict) -> dict:
     embed = {
         "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
         "url": LEADERBOARD_URL,
-        "description": f"\U0001F465  **{members}** members   ·   Ranked by experience\n​",
+        "description": f"\U0001F465  **{members}** members   \u00b7   Ranked by experience\n\u200b",
         "color": COLOR,
         "fields": fields,
-        "footer": {"text": "Updates automatically · raccoon-bot.com"},
+        "footer": {"text": "Updates automatically \u00b7 raccoon-bot.com"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     if data.get("avatar"):
@@ -156,7 +180,10 @@ def main():
     data = scrape()
     print("Scraped podium:", data["podium"])
     print("Scraped rows:", len(data["rows"]))
-    payload = {"content": "", "embeds": [build_embed(data)], "attachments": []}
+    ids = sum(1 for r in data["rows"] if r.get("uid")) + sum(1 for m in data["podium"] if m.get("uid"))
+    print("Discord IDs found:", ids, "of", len(data["rows"]) + len(data["podium"]))
+    payload = {"content": "", "embeds": [build_embed(data)], "attachments": [],
+               "allowed_mentions": {"parse": []}}
 
     if message_id:
         r = requests.patch(f"{webhook}/messages/{message_id}", json=payload, timeout=60)
