@@ -165,15 +165,15 @@ def row_lines(data: dict):
         rank, level, xp = to_int(cells[0]), to_int(cells[2]), to_int(cells[3])
         pm = re.search(r"(\d+)\s*%", cells[-1])
         pct = int(pm.group(1)) if pm else 0
-        line = (f"{LRM}`{rank:02d} {bar(pct, BAR_SIZE)} {pct:>3}%`  {who(cells[1], item.get('uid'))}  ·  "
-                f"Lvl {level}  ·  `{xp:,} XP`{LRM}")
+        line = (f"{LRM}`{rank:02d}`  {who(cells[1], item.get('uid'))}  ·  "
+                f"Lvl {level}  ·  `{xp:,} XP`  `{bar(pct, BAR_SIZE)} {pct:>3}%`{LRM}")
         out.append((rank, line))
     return out
 
 
 def top3_lines(podium):
-    return [f"{LRM}{MEDALS[i]} `{bar(m['pct'], BAR_SIZE)} {m['pct']:>3}%`  {who(m['name'] or '?', m.get('uid'))}  ·  "
-            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**{LRM}"
+    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ·  "
+            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**  `{bar(m['pct'], BAR_SIZE)} {m['pct']:>3}%`{LRM}"
             for i, m in enumerate(podium)]
 
 
