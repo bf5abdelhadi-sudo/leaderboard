@@ -192,7 +192,8 @@ def build_v2(data: dict, image_name=None) -> dict:
     title = (data["title"] or "Leaderboard").strip()
     rows = row_lines(data)
     footer = f"-# Updates automatically · raccoon-bot.com · last update <t:{int(time.time())}:R>"
-    head = f"# \U0001F3C6  {title}\n-# \U0001F465  **{members}** members · Ranked by experience"
+    link_title = title.replace("[", "(").replace("]", ")")
+    head = f"# \U0001F3C6  [{link_title}]({LEADERBOARD_URL})\n-# \U0001F465  **{members}** members · Ranked by experience"
     top = "### \U0001F3C5  Top 3\n" + "\n".join(top3_lines(podium))
 
     def ranks_text(rs):
