@@ -140,14 +140,14 @@ def to_int(s: str) -> int:
 
 ROWS_PER_FIELD = 8
 BAR_SIZE = 8          # length of the XP progress bar (number of blocks)
-PLAIN_NAME_IDS = set()  # Discord IDs that should show a plain name instead of a @mention
+PLAIN_NAME_IDS = {"1559658212419174500"}  # IDs that show a plain name instead of a @mention
+                                          # (add the ID of anyone who shows up as a raw <@number>)
 USE_MENTIONS = True   # True: clickable @mentions (needs the member's Discord ID); False: plain names
 
 
 def who(name: str, uid) -> str:
     """Clickable mention if we have the Discord ID, otherwise the plain name."""
-    # IDs ending in "00" are usually rounded by the website (not real) -> plain name
-    if USE_MENTIONS and uid and uid not in PLAIN_NAME_IDS and not uid.endswith("00"):
+    if USE_MENTIONS and uid and uid not in PLAIN_NAME_IDS:
         return f"<@{uid}>"
     return f"**{ltr(esc(name[:28]))}**"
 
