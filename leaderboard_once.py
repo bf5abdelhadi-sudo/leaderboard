@@ -149,78 +149,112 @@ def who(name: str, uid) -> str:
     return f"**{ltr(esc(name[:28]))}**"
 
 
-def podium_text_fields(podium):
-    """Fallback if the podium picture could not be made: 3 columns of text."""
-    places = ["1st", "2nd", "3rd"]
-    order = [1, 0, 2] if len(podium) == 3 else list(range(len(podium)))
+V2_FLAG = 1 << 15     # Discord "components v2" message flag (one card, free layout)
+MAX_TEXT = 3800       # Discord allows 4000 characters of text per v2 message
+
+
+def row_lines(data: dict):
     out = []
-    for i in order:
-        m = podium[i]
-        out.append({
-            "name": f"{MEDALS[i]}  {places[i]} place",
-            "value": (f"{LRM}{who(m['name'] or '?', m.get('uid'))}\n"
-                      f"**{m['xp']:,} XP**\nLevel {m['level']}\n"
-                      f"`{bar(m['pct'], 8)}` {m['pct']}%\n​"),
-            "inline": True,
-        })
-    return out
-
-
-def top3_field(podium):
-    """Clickable names of the top 3 (the picture can't have clickable names)."""
-    lines = [f"{LRM}{MEDALS[i]}   {who(m['name'] or '?', m.get('uid'))}   ·   "
-             f"Lvl {m['level']}   ·   `{m['xp']:,} XP`{LRM}" for i, m in enumerate(podium)]
-    return {"name": "\U0001F3C6  Top 3", "value": "\n".join(lines) + "\n​", "inline": False}
-
-
-def build_embeds(data: dict, image_name=None) -> list:
-    podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
-    members = data["members"] or "?"
-
-    # Embed 1: title + the podium picture
-    head = {
-        "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
-        "url": LEADERBOARD_URL,
-        "description": f"\U0001F465  **{members}** members   ·   Ranked by experience\n​",
-        "color": COLOR,
-    }
-    fields = []
-    if image_name:
-        head["image"] = {"url": f"attachment://{image_name}"}
-        fields.append(top3_field(podium))
-    else:
-        if data.get("avatar"):
-            head["thumbnail"] = {"url": data["avatar"]}
-        head["fields"] = podium_text_fields(podium)
-
-    # Embed 2: everyone else
-    rows = []
     for item in data["rows"]:
         cells = item["cells"]
         if len(cells) < 4:
             continue
-        rank = to_int(cells[0])
-        level = to_int(cells[2])
-        xp = to_int(cells[3])
-        line = (f"{LRM}`{rank:02d}`   {who(cells[1], item.get('uid'))}   ·   "
-                f"Lvl {level}   ·   `{xp:,} XP`{LRM}")
-        rows.append((rank, line))
+        rank, level, xp = to_int(cells[0]), to_int(cells[2]), to_int(cells[3])
+        line = (f"{LRM}`{rank:02d}`  {who(cells[1], item.get('uid'))}  ·  "
+                f"Lvl {level}  ·  `{xp:,} XP`{LRM}")
+        out.append((rank, line))
+    return out
 
+
+def top3_lines(podium):
+    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ·  "
+            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**  ·  {m['pct']}%{LRM}"
+            for i, m in enumerate(podium)]
+
+
+def sorted_podium(data):
+    return sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
+
+
+def attachments_for(image_name):
+    return [{"id": 0, "filename": image_name}] if image_name else []
+
+
+def build_v2(data: dict, image_name=None) -> dict:
+    """ONE card: title, podium picture, top 3, the rest of the ranking, footer."""
+    podium = sorted_podium(data)
+    members = data["members"] or "?"
+    title = (data["title"] or "Leaderboard").strip()
+    rows = row_lines(data)
+    footer = f"-# Updates automatically · raccoon-bot.com · last update <t:{int(time.time())}:R>"
+    head = f"# \U0001F3C6  {title}\n-# \U0001F465  **{members}** members · Ranked by experience"
+    top = "### \U0001F3C5  Top 3\n" + "\n".join(top3_lines(podium))
+
+    def ranks_text(rs):
+        return f"### \U0001F4CB  Ranks {rs[0][0]} – {rs[-1][0]}\n" + "\n".join(l for _, l in rs)
+
+    while rows and len(head) + len(top) + len(footer) + len(ranks_text(rows)) > MAX_TEXT:
+        rows.pop()
+
+    def txt(c):
+        return {"type": 10, "content": c}
+
+    def sep(divider=True):
+        return {"type": 14, "divider": divider, "spacing": 1}
+
+    comps = [txt(head)]
+    if image_name:
+        comps.append({"type": 12, "items": [
+            {"media": {"url": f"attachment://{image_name}"}, "description": "Top 3 podium"}]})
+    comps += [sep(), txt(top)]
+    if rows:
+        comps += [sep(), txt(ranks_text(rows))]
+    comps += [sep(False), txt(footer)]
+
+    return {
+        "flags": V2_FLAG,
+        "components": [{"type": 17, "accent_color": COLOR, "components": comps}],
+        "attachments": attachments_for(image_name),
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def build_classic(data: dict, image_name=None) -> dict:
+    """Fallback: ONE normal embed (the picture can only sit at its bottom)."""
+    podium = sorted_podium(data)
+    rows = row_lines(data)
+    fields = [{"name": "\U0001F3C6  Top 3", "value": "\n".join(top3_lines(podium)) + "\n​",
+               "inline": False}]
     for n in range(0, len(rows), ROWS_PER_FIELD):
         chunk = rows[n:n + ROWS_PER_FIELD]
         fields.append({
             "name": f"\U0001F4CB  Ranks {chunk[0][0]} – {chunk[-1][0]}",
-            "value": ("\n".join(line for _, line in chunk) + "\n​")[:1024],
+            "value": ("\n".join(l for _, l in chunk) + "\n​")[:1024],
             "inline": False,
         })
-
-    body = {
+    embed = {
+        "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
+        "url": LEADERBOARD_URL,
+        "description": f"\U0001F465  **{data['members'] or '?'}** members   ·   Ranked by experience\n​",
         "color": COLOR,
         "fields": fields,
         "footer": {"text": "Updates automatically · raccoon-bot.com"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    return [head, body]
+    if image_name:
+        embed["image"] = {"url": f"attachment://{image_name}"}
+    elif data.get("avatar"):
+        embed["thumbnail"] = {"url": data["avatar"]}
+    return {"content": "", "embeds": [embed], "attachments": attachments_for(image_name),
+            "allowed_mentions": {"parse": []}}
+
+
+def call(method, url, payload, png, image_name):
+    if png:
+        return requests.request(method, url, timeout=90,
+                                data={"payload_json": json.dumps(payload)},
+                                files={"files[0]": (image_name, png, "image/png")})
+    return requests.request(method, url, timeout=90, json=payload)
 
 
 def main():
@@ -235,23 +269,31 @@ def main():
     print("Podium picture:", f"{len(png)} bytes" if png else "none")
 
     image_name = f"podium-{int(time.time())}.png" if png else None
-    payload = {"content": "", "embeds": build_embeds(data, image_name), "attachments": [],
-               "allowed_mentions": {"parse": []}}
-    kwargs = {"json": payload}
-    if png:
-        payload["attachments"] = [{"id": 0, "filename": image_name}]
-        kwargs = {"data": {"payload_json": json.dumps(payload)},
-                  "files": {"files[0]": (image_name, png, "image/png")}}
+    v2 = build_v2(data, image_name)
+    classic = build_classic(data, image_name)
 
     if message_id:
-        r = requests.patch(f"{webhook}/messages/{message_id}", timeout=90, **kwargs)
-        if r.status_code != 404:
-            r.raise_for_status()
-            print("Message updated")
+        edit_url = f"{webhook}/messages/{message_id}"
+        r = call("PATCH", edit_url + "?with_components=true",
+                 {**v2, "content": None, "embeds": []}, png, image_name)
+        if r.ok:
+            print("Message updated (one-card layout)")
             return
+        if r.status_code != 404:
+            print("One-card layout refused on edit:", r.status_code, r.text[:300])
+            r = call("PATCH", edit_url, classic, png, image_name)
+            if r.ok:
+                print("Message updated (single-embed layout)")
+                print("TIP: to get the one-card layout, delete the MESSAGE_ID variable, "
+                      "run once, then save the new ID printed below/at the end of that run.")
+                return
+            r.raise_for_status()
         print("Old message not found, posting a new one")
 
-    r = requests.post(webhook + "?wait=true", timeout=90, **kwargs)
+    r = call("POST", f"{webhook}?wait=true&with_components=true", v2, png, image_name)
+    if not r.ok:
+        print("One-card layout refused:", r.status_code, r.text[:300])
+        r = call("POST", f"{webhook}?wait=true", classic, png, image_name)
     r.raise_for_status()
     print("NEW MESSAGE ID (save this as the MESSAGE_ID variable):", r.json()["id"])
 
