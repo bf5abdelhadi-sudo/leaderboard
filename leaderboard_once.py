@@ -22,9 +22,8 @@ SCRAPE_JS = """
   const findId = el => {
     if (!el) return null;
     const h = el.outerHTML;
-    // Only trust the ID inside a Discord avatar link: it is exact. Other numbers on the page
-    // (profile links, data ids) can be rounded by the website and would give broken tags.
-    const m = h.match(/avatars\\/(\\d{17,20})\\//);
+    // 1) ID inside a Discord avatar link, 2) otherwise an ID in a profile/user link
+    const m = h.match(/avatars\\/(\\d{17,20})\\//) || h.match(/(?:users|profile|user|member)s?\\/(\\d{17,20})/);
     return m ? m[1] : null;
   };
   const h1 = document.querySelector('h1');
@@ -142,7 +141,7 @@ def to_int(s: str) -> int:
 
 ROWS_PER_FIELD = 8
 BAR_SIZE = 8          # length of the XP progress bar (number of blocks)
-PLAIN_NAME_IDS = set()  # IDs that show a plain name instead of a @mention
+PLAIN_NAME_IDS = {"1559658212419174500"}  # IDs that show a plain name instead of a @mention
 ID_OVERRIDES = {}      # fix a wrong/missing ID by name, e.g. {"isslam ali": "123456789012345678"}
                                           # (add the ID of anyone who shows up as a raw <@number>)
 USE_MENTIONS = True   # True: clickable @mentions (needs the member's Discord ID); False: plain names
@@ -276,6 +275,8 @@ def main():
     print("Scraped rows:", len(data["rows"]))
     ids = sum(1 for r in data["rows"] if r.get("uid")) + sum(1 for m in data["podium"] if m.get("uid"))
     print("Discord IDs found:", ids, "of", len(data["rows"]) + len(data["podium"]))
+    print("IDs found:", "; ".join(f"{(m['name'] or '?')[:20]}={m['uid']}" for m in data["podium"] if m.get("uid")),
+          "|", "; ".join(f"{i['cells'][1][:20]}={i['uid']}" for i in data["rows"] if i.get("uid") and len(i["cells"]) > 1))
     missing = ([i["cells"][1] for i in data["rows"] if not i.get("uid") and len(i["cells"]) > 1]
                + [m["name"] for m in data["podium"] if not m.get("uid")])
     if missing:
