@@ -139,12 +139,15 @@ def to_int(s: str) -> int:
 
 
 ROWS_PER_FIELD = 8
+BAR_SIZE = 8          # length of the XP progress bar (number of blocks)
+PLAIN_NAME_IDS = set()  # Discord IDs that should show a plain name instead of a @mention
 USE_MENTIONS = True   # True: clickable @mentions (needs the member's Discord ID); False: plain names
 
 
 def who(name: str, uid) -> str:
     """Clickable mention if we have the Discord ID, otherwise the plain name."""
-    if USE_MENTIONS and uid:
+    # IDs ending in "00" are usually rounded by the website (not real) -> plain name
+    if USE_MENTIONS and uid and uid not in PLAIN_NAME_IDS and not uid.endswith("00"):
         return f"<@{uid}>"
     return f"**{ltr(esc(name[:28]))}**"
 
@@ -160,15 +163,17 @@ def row_lines(data: dict):
         if len(cells) < 4:
             continue
         rank, level, xp = to_int(cells[0]), to_int(cells[2]), to_int(cells[3])
-        line = (f"{LRM}`{rank:02d}`  {who(cells[1], item.get('uid'))}  ·  "
+        pm = re.search(r"(\d+)\s*%", cells[-1])
+        pct = int(pm.group(1)) if pm else 0
+        line = (f"{LRM}`{rank:02d} {bar(pct, BAR_SIZE)} {pct:>3}%`  {who(cells[1], item.get('uid'))}  ·  "
                 f"Lvl {level}  ·  `{xp:,} XP`{LRM}")
         out.append((rank, line))
     return out
 
 
 def top3_lines(podium):
-    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ·  "
-            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**  ·  {m['pct']}%{LRM}"
+    return [f"{LRM}{MEDALS[i]} `{bar(m['pct'], BAR_SIZE)} {m['pct']:>3}%`  {who(m['name'] or '?', m.get('uid'))}  ·  "
+            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**{LRM}"
             for i, m in enumerate(podium)]
 
 
