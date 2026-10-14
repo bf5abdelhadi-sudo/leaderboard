@@ -74,14 +74,16 @@ def esc(text: str) -> str:
     return re.sub(r"([*_`~|>\\])", r"\\\1", text)
 
 
-def isolate(text: str) -> str:
-    """Keep right-to-left names (Arabic) from scrambling the rest of the line."""
-    return "\u2066" + text + "\u2069"
+LRM = "‎"  # invisible left-to-right mark: keeps Arabic names from flipping the line
+
+
+def ltr(text: str) -> str:
+    return LRM + text + LRM
 
 
 def bar(pct: int, size: int) -> str:
     n = max(0, min(size, round(pct / 100 * size)))
-    return "\u25b0" * n + "\u25b1" * (size - n)
+    return "▰" * n + "▱" * (size - n)
 
 
 def to_int(s: str) -> int:
@@ -95,44 +97,51 @@ ROWS_PER_FIELD = 8
 def build_embed(data: dict) -> dict:
     podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
 
-    # Podium as three side-by-side fields, 2nd - 1st - 3rd, like the website
+    # Podium as three side-by-side columns: 2nd - 1st - 3rd, like the website
     fields = []
     order = [1, 0, 2] if len(podium) == 3 else list(range(len(podium)))
     for i in order:
         m = podium[i]
         fields.append({
-            "name": f"{MEDALS[i]} {isolate(m['name'] or '?')}"[:256],
-            "value": f"**{m['xp']:,} XP**\nLevel {m['level']}\n`{bar(m['pct'], 8)}` {m['pct']}%",
+            "name": f"{MEDALS[i]}  {ltr(esc(m['name'] or '?'))}"[:256],
+            "value": (
+                f"**{m['xp']:,} XP**\n"
+                f"Level {m['level']}\n"
+                f"`{bar(m['pct'], 8)}` {m['pct']}%\n"
+                "​"
+            ),
             "inline": True,
         })
 
-    # Everyone else, grouped into tidy blocks
+    # Everyone else, in tidy blocks with their own header
     rows = []
     for cells in data["rows"]:
         if len(cells) < 4:
             continue
         rank = to_int(cells[0])
-        name = isolate(esc(cells[1][:28]))
+        name = esc(cells[1][:28])
         level = to_int(cells[2])
         xp = to_int(cells[3])
-        rows.append(f"`{rank:02d}` **{name}** \u00b7 Lvl {level} \u00b7 `{xp:,} XP`")
+        line = f"{LRM}`{rank:02d}`   **{ltr(name)}**   ·   Lvl {level}   ·   `{xp:,} XP`{LRM}"
+        rows.append((rank, line))
 
     for n in range(0, len(rows), ROWS_PER_FIELD):
         chunk = rows[n:n + ROWS_PER_FIELD]
+        first, last = chunk[0][0], chunk[-1][0]
         fields.append({
-            "name": "\U0001F4CB Other members" if n == 0 else "\u200b",
-            "value": "\n".join(chunk)[:1024],
+            "name": f"\U0001F4CB  Ranks {first} – {last}",
+            "value": ("\n".join(line for _, line in chunk) + "\n​")[:1024],
             "inline": False,
         })
 
     members = data["members"] or "?"
     embed = {
-        "title": f"\U0001F3C6 {data['title'] or 'Leaderboard'}",
+        "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
         "url": LEADERBOARD_URL,
-        "description": f"\U0001F465 **{members}** members \u00b7 Ranked by experience",
+        "description": f"\U0001F465  **{members}** members   ·   Ranked by experience\n​",
         "color": COLOR,
         "fields": fields,
-        "footer": {"text": "Updates automatically \u00b7 raccoon-bot.com"},
+        "footer": {"text": "Updates automatically · raccoon-bot.com"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     if data.get("avatar"):
