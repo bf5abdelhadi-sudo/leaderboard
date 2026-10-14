@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import re
+import time
 
 import requests
 
@@ -61,11 +62,27 @@ SCRAPE_JS = """
 """ % FIX
 
 
+PODIUM_JS = r"""
+() => {
+  const lv = [...document.querySelectorAll('body *')].filter(e =>
+    e.children.length === 0 && /^Lvl\s*\d+$/.test(e.textContent.trim()) && !e.closest('table'));
+  if (lv.length < 3) return null;
+  let c = lv[0];
+  while (c && !lv.every(x => c.contains(x))) c = c.parentElement;
+  return c;
+}
+"""
+
+HIDE_COOKIE_CSS = '[class*="cookie" i], [id*="cookie" i], [class*="consent" i] { display: none !important; }'
+
+
 def scrape():
+    """Returns (data, podium_png_bytes_or_None)."""
     from playwright.sync_api import sync_playwright
+    png = None
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        page = browser.new_page(viewport={"width": 1100, "height": 1200}, device_scale_factor=2)
         page.goto(LEADERBOARD_URL, wait_until="networkidle", timeout=60000)
         try:
             page.get_by_role("button", name="Accept").click(timeout=4000)
@@ -77,10 +94,27 @@ def scrape():
         except Exception:
             pass
         page.wait_for_selector("table", timeout=30000)
+        try:
+            page.wait_for_function("[...document.images].every(i => i.complete)", timeout=10000)
+        except Exception:
+            pass
         page.wait_for_timeout(1000)
         data = page.evaluate(SCRAPE_JS)
+
+        # Picture of the podium (the 3 cards with the profile pictures)
+        try:
+            page.add_style_tag(content=HIDE_COOKIE_CSS)
+            page.evaluate("window.scrollTo(0, 0)")
+            el = page.evaluate_handle(PODIUM_JS).as_element()
+            box = el.bounding_box()
+            pad = 16
+            png = page.screenshot(full_page=True, clip={
+                "x": max(box["x"] - pad, 0), "y": max(box["y"] - pad, 0),
+                "width": box["width"] + 2 * pad, "height": box["height"] + 2 * pad})
+        except Exception as e:
+            print("Podium image failed, using text podium:", e)
         browser.close()
-    return data
+    return data, png
 
 
 def esc(text: str) -> str:
@@ -115,28 +149,51 @@ def who(name: str, uid) -> str:
     return f"**{ltr(esc(name[:28]))}**"
 
 
-def build_embed(data: dict) -> dict:
-    podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
+def podium_text_fields(podium):
+    """Fallback if the podium picture could not be made: 3 columns of text."""
     places = ["1st", "2nd", "3rd"]
-
-    # Podium as three side-by-side columns: 2nd - 1st - 3rd, like the website.
-    # (Mentions only render inside field VALUES, so the name goes in the value.)
-    fields = []
     order = [1, 0, 2] if len(podium) == 3 else list(range(len(podium)))
+    out = []
     for i in order:
         m = podium[i]
-        fields.append({
+        out.append({
             "name": f"{MEDALS[i]}  {places[i]} place",
-            "value": (
-                f"{LRM}{who(m['name'] or '?', m.get('uid'))}\n"
-                f"**{m['xp']:,} XP**\n"
-                f"Level {m['level']}\n"
-                f"`{bar(m['pct'], 8)}` {m['pct']}%\n"
-                "\u200b"
-            ),
+            "value": (f"{LRM}{who(m['name'] or '?', m.get('uid'))}\n"
+                      f"**{m['xp']:,} XP**\nLevel {m['level']}\n"
+                      f"`{bar(m['pct'], 8)}` {m['pct']}%\n​"),
             "inline": True,
         })
+    return out
 
+
+def top3_field(podium):
+    """Clickable names of the top 3 (the picture can't have clickable names)."""
+    lines = [f"{LRM}{MEDALS[i]}   {who(m['name'] or '?', m.get('uid'))}   ·   "
+             f"Lvl {m['level']}   ·   `{m['xp']:,} XP`{LRM}" for i, m in enumerate(podium)]
+    return {"name": "\U0001F3C6  Top 3", "value": "\n".join(lines) + "\n​", "inline": False}
+
+
+def build_embeds(data: dict, image_name=None) -> list:
+    podium = sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
+    members = data["members"] or "?"
+
+    # Embed 1: title + the podium picture
+    head = {
+        "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
+        "url": LEADERBOARD_URL,
+        "description": f"\U0001F465  **{members}** members   ·   Ranked by experience\n​",
+        "color": COLOR,
+    }
+    fields = []
+    if image_name:
+        head["image"] = {"url": f"attachment://{image_name}"}
+        fields.append(top3_field(podium))
+    else:
+        if data.get("avatar"):
+            head["thumbnail"] = {"url": data["avatar"]}
+        head["fields"] = podium_text_fields(podium)
+
+    # Embed 2: everyone else
     rows = []
     for item in data["rows"]:
         cells = item["cells"]
@@ -145,55 +202,56 @@ def build_embed(data: dict) -> dict:
         rank = to_int(cells[0])
         level = to_int(cells[2])
         xp = to_int(cells[3])
-        line = (f"{LRM}`{rank:02d}`   {who(cells[1], item.get('uid'))}   \u00b7   "
-                f"Lvl {level}   \u00b7   `{xp:,} XP`{LRM}")
+        line = (f"{LRM}`{rank:02d}`   {who(cells[1], item.get('uid'))}   ·   "
+                f"Lvl {level}   ·   `{xp:,} XP`{LRM}")
         rows.append((rank, line))
 
     for n in range(0, len(rows), ROWS_PER_FIELD):
         chunk = rows[n:n + ROWS_PER_FIELD]
-        first, last = chunk[0][0], chunk[-1][0]
         fields.append({
-            "name": f"\U0001F4CB  Ranks {first} \u2013 {last}",
-            "value": ("\n".join(line for _, line in chunk) + "\n\u200b")[:1024],
+            "name": f"\U0001F4CB  Ranks {chunk[0][0]} – {chunk[-1][0]}",
+            "value": ("\n".join(line for _, line in chunk) + "\n​")[:1024],
             "inline": False,
         })
 
-    members = data["members"] or "?"
-    embed = {
-        "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
-        "url": LEADERBOARD_URL,
-        "description": f"\U0001F465  **{members}** members   \u00b7   Ranked by experience\n\u200b",
+    body = {
         "color": COLOR,
         "fields": fields,
-        "footer": {"text": "Updates automatically \u00b7 raccoon-bot.com"},
+        "footer": {"text": "Updates automatically · raccoon-bot.com"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    if data.get("avatar"):
-        embed["thumbnail"] = {"url": data["avatar"]}
-    return embed
+    return [head, body]
 
 
 def main():
     webhook = os.environ["WEBHOOK_URL"].split("?")[0].rstrip("/")
     message_id = os.environ.get("MESSAGE_ID", "").strip()
 
-    data = scrape()
+    data, png = scrape()
     print("Scraped podium:", data["podium"])
     print("Scraped rows:", len(data["rows"]))
     ids = sum(1 for r in data["rows"] if r.get("uid")) + sum(1 for m in data["podium"] if m.get("uid"))
     print("Discord IDs found:", ids, "of", len(data["rows"]) + len(data["podium"]))
-    payload = {"content": "", "embeds": [build_embed(data)], "attachments": [],
+    print("Podium picture:", f"{len(png)} bytes" if png else "none")
+
+    image_name = f"podium-{int(time.time())}.png" if png else None
+    payload = {"content": "", "embeds": build_embeds(data, image_name), "attachments": [],
                "allowed_mentions": {"parse": []}}
+    kwargs = {"json": payload}
+    if png:
+        payload["attachments"] = [{"id": 0, "filename": image_name}]
+        kwargs = {"data": {"payload_json": json.dumps(payload)},
+                  "files": {"files[0]": (image_name, png, "image/png")}}
 
     if message_id:
-        r = requests.patch(f"{webhook}/messages/{message_id}", json=payload, timeout=60)
+        r = requests.patch(f"{webhook}/messages/{message_id}", timeout=90, **kwargs)
         if r.status_code != 404:
             r.raise_for_status()
             print("Message updated")
             return
         print("Old message not found, posting a new one")
 
-    r = requests.post(webhook + "?wait=true", json=payload, timeout=60)
+    r = requests.post(webhook + "?wait=true", timeout=90, **kwargs)
     r.raise_for_status()
     print("NEW MESSAGE ID (save this as the MESSAGE_ID variable):", r.json()["id"])
 
