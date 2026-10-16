@@ -181,26 +181,19 @@ def parse_rows(data: dict):
     return out
 
 
-def stats(level, xp, pct, xp_w) -> str:
-    """Fixed-width stats chip, so every line lines up in a neat column."""
-    return f"Lv {int(level):>2} │ {f'{int(xp):,}':>{xp_w}} XP │ {bar(pct, BAR_SIZE)} {pct:>3}%"
-
-
-def xp_width(data: dict) -> int:
-    xps = [r[4] for r in parse_rows(data)] + [int(m["xp"]) for m in data["podium"]]
-    return max((len(f"{x:,}") for x in xps), default=1)
+def stats(level, xp, pct) -> str:
+    """One tidy stats chip: level │ XP │ progress bar."""
+    return f"Lv {int(level)} │ {int(xp):,} XP │ {bar(pct, BAR_SIZE)} {pct}%"
 
 
 def row_lines(data: dict):
-    w = xp_width(data)
-    return [(rank, f"{LRM}`{rank:02d} │ {stats(level, xp, pct, w)}`  {who(name, uid)}{LRM}")
+    return [(rank, f"{LRM}`{rank:02d}`  {who(name, uid)}  ─  `{stats(level, xp, pct)}`{LRM}")
             for rank, name, uid, level, xp, pct in parse_rows(data)]
 
 
 def top3_lines(podium, data=None):
-    w = xp_width(data) if data else max((len(f"{int(m['xp']):,}") for m in podium), default=1)
-    return [f"{LRM}{MEDALS[i]} `{stats(m['level'], m['xp'], m['pct'], w)}`  "
-            f"{who(m['name'] or '?', m.get('uid'))}{LRM}"
+    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ─  "
+            f"`{stats(m['level'], m['xp'], m['pct'])}`{LRM}"
             for i, m in enumerate(podium)]
 
 
