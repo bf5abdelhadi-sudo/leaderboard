@@ -186,13 +186,70 @@ def stats(level, xp, pct) -> str:
     return f"Lv {int(level)} │ {int(xp):,} XP │ {bar(pct, BAR_SIZE)} {pct}%"
 
 
+# ---- Rank changes (▲2 / ▼1 / 🆕) -------------------------------------------------
+RANKS_FILE = ".ranks.json"   # saved rank history (the workflow commits it, like .message_id)
+MOVES_HOURS = 24             # arrows show the change over the last 24 hours
+
+
+def member_key(name, uid) -> str:
+    uid = ID_OVERRIDES.get((name or "").strip(), uid)
+    return uid or "name:" + (name or "").strip()
+
+
+def current_ranks(data: dict) -> dict:
+    ranks = {member_key(m["name"], m.get("uid")): i + 1 for i, m in enumerate(sorted_podium(data))}
+    for rank, name, uid, *_ in parse_rows(data):
+        ranks.setdefault(member_key(name, uid), rank)
+    return ranks
+
+
+def load_history() -> list:
+    try:
+        with open(RANKS_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def baseline_ranks(history: list):
+    """Ranks from about MOVES_HOURS ago (the oldest snapshot we kept), or None."""
+    return history[0]["ranks"] if history else None
+
+
+def save_history(history: list, ranks: dict):
+    """Keeps one snapshot per hour for the last MOVES_HOURS hours."""
+    now = int(time.time())
+    if not history or now - history[-1]["t"] >= 3600:
+        history.append({"t": now, "ranks": ranks})
+    history = [h for h in history if now - h["t"] <= MOVES_HOURS * 3600 + 1800] or history[-1:]
+    with open(RANKS_FILE, "w") as f:
+        json.dump(history, f, ensure_ascii=False)
+
+
+def move(data: dict, name, uid, rank) -> str:
+    prev = data.get("prev")
+    if not prev:
+        return ""
+    old = prev.get(member_key(name, uid))
+    if old is None:
+        return "  \U0001F195"                       # 🆕
+    if old > rank:
+        return f"  ▲{old - rank}"
+    if old < rank:
+        return f"  ▼{rank - old}"
+    return ""
+
+
 def row_lines(data: dict):
-    return [(rank, f"{LRM}`{rank:02d}`  {who(name, uid)}  ─  `{stats(level, xp, pct)}`{LRM}")
+    return [(rank, f"{LRM}`{rank:02d}`  {who(name, uid)}{move(data, name, uid, rank)}  ─  "
+                   f"`{stats(level, xp, pct)}`{LRM}")
             for rank, name, uid, level, xp, pct in parse_rows(data)]
 
 
 def top3_lines(podium, data=None):
-    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ─  "
+    data = data or {}
+    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}"
+            f"{move(data, m['name'] or '?', m.get('uid'), i + 1)}  ─  "
             f"`{stats(m['level'], m['xp'], m['pct'])}`{LRM}"
             for i, m in enumerate(podium)]
 
@@ -201,23 +258,33 @@ def top3_lines(podium, data=None):
 # (first rank, last rank, emoji, name). Anyone ranked after the last group joins it.
 TIERS = [
     (4, 10, "\U0001F48E", "Diamond Zone"),   # 💎
-    (11, 18, "\U0001F947", "Gold Zone"),     # 🥇
-    (19, 999, "\U0001F948", "Silver Zone"),  # 🥈
+    (11, 18, "\U0001F7E1", "Gold Zone"),     # 🟡
+    (19, 999, "\u26AA", "Silver Zone"),      # ⚪
 ]
 
 
-def split_tiers(rows):
-    """[(emoji, name, [(rank, line), ...])] — empty groups are skipped."""
-    groups = []
+def split_tiers(rows, data=None):
+    """[(emoji, name, [(rank, line), ...], goal)] — empty groups are skipped.
+    goal = "🎯 N XP to reach <zone above>" (XP the best of this zone still needs)."""
+    xp = {r[0]: r[4] for r in parse_rows(data)} if data else {}
+    if data:
+        xp.update({i + 1: int(m["xp"]) for i, m in enumerate(sorted_podium(data))})
+    groups, above = [], ("\U0001F451", "Top 3")
     for first, last, emoji, name in TIERS:
         chunk = [r for r in rows if first <= r[0] <= last]
         if chunk:
-            groups.append((emoji, name, chunk))
+            goal = ""
+            top, prev_last = chunk[0][0], chunk[0][0] - 1
+            if top in xp and prev_last in xp:
+                need = max(1, xp[prev_last] - xp[top] + 1)
+                goal = f"  ·  \U0001F3AF **{need:,} XP** to reach {above[0]} {above[1]}"
+            groups.append((emoji, name, chunk, goal))
+            above = (emoji, name)
     return groups
 
 
-def tier_text(emoji, name, chunk):
-    return (f"### {emoji}  {name}\n-# Ranks {chunk[0][0]} – {chunk[-1][0]}\n"
+def tier_text(emoji, name, chunk, goal=""):
+    return (f"### {emoji}  {name}\n-# Ranks {chunk[0][0]} – {chunk[-1][0]}{goal}\n"
             + "\n".join(l for _, l in chunk))
 
 
@@ -236,14 +303,15 @@ def build_v2(data: dict, image_name=None) -> dict:
     title = (data["title"] or "Leaderboard").strip()
     rows = row_lines(data)
     now = int(time.time())
-    footer = f"-# \U0001F504  Updates automatically  ·  last update <t:{now}:R>  ·  <t:{now}:t>"
+    legend = f"-# ▲▼ rank change in the last {MOVES_HOURS}h  ·  \U0001F195 new on the list\n" if data.get("prev") else ""
+    footer = f"{legend}-# \U0001F504  Updates automatically  ·  last update <t:{now}:R>  ·  <t:{now}:t>"
     link_title = title.replace("[", "(").replace("]", ")")
     head = (f"# \U0001F3C6  [{link_title}]({LEADERBOARD_URL})\n"
             f"-# \U0001F465  **{members}** members  ·  ✨ Ranked by experience")
     top = "## \U0001F451  Top 3\n" + "\n".join(top3_lines(podium, data))
 
     def ranks_len(rs):
-        return sum(len(tier_text(*g)) for g in split_tiers(rs))
+        return sum(len(tier_text(*g)) for g in split_tiers(rs, data))
 
     while rows and len(head) + len(top) + len(footer) + ranks_len(rows) > MAX_TEXT:
         rows.pop()
@@ -259,7 +327,7 @@ def build_v2(data: dict, image_name=None) -> dict:
         comps.append({"type": 12, "items": [
             {"media": {"url": f"attachment://{image_name}"}, "description": "Top 3 podium"}]})
     comps += [sep(), txt(top)]
-    for group in split_tiers(rows):
+    for group in split_tiers(rows, data):
         comps += [sep(), txt(tier_text(*group))]
     comps += [sep(), txt(footer)]
 
@@ -277,7 +345,7 @@ def build_classic(data: dict, image_name=None) -> dict:
     rows = row_lines(data)
     fields = [{"name": "\U0001F451  Top 3", "value": "\n".join(top3_lines(podium, data)) + "\n​",
                "inline": False}]
-    for emoji, name, group in split_tiers(rows):
+    for emoji, name, group, _goal in split_tiers(rows, data):
         for n in range(0, len(group), ROWS_PER_FIELD):
             chunk = group[n:n + ROWS_PER_FIELD]
             fields.append({
@@ -331,6 +399,9 @@ def main():
     message_id = load_message_id()
 
     data, png = scrape()
+    history = load_history()
+    data["prev"] = baseline_ranks(history)
+    save_history(history, current_ranks(data))
     print("Scraped podium:", data["podium"])
     print("Scraped rows:", len(data["rows"]))
     ids = sum(1 for r in data["rows"] if r.get("uid")) + sum(1 for m in data["podium"] if m.get("uid"))
