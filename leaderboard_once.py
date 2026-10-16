@@ -200,9 +200,9 @@ def top3_lines(podium, data=None):
 # The ranks under the Top 3 are split into small groups. Edit freely:
 # (first rank, last rank, emoji, name). Anyone ranked after the last group joins it.
 TIERS = [
-    (4, 10, "\U0001F525", "Elite"),          # 🔥
-    (11, 18, "\u26A1", "Challengers"),       # ⚡
-    (19, 999, "\U0001F331", "Rising"),       # 🌱
+    (4, 10, "\U0001F48E", "Diamond Zone"),   # 💎
+    (11, 18, "\U0001F947", "Gold Zone"),     # 🥇
+    (19, 999, "\U0001F948", "Silver Zone"),  # 🥈
 ]
 
 
