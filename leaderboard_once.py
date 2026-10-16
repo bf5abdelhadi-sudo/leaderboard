@@ -9,7 +9,10 @@ import time
 
 import requests
 
-LEADERBOARD_URL = "https://raccoon-bot.com/leaderboard/387708754814304260"
+# Which Raccoon leaderboard to show. To use another server, set a repository VARIABLE called
+# LEADERBOARD_URL in GitHub (no need to edit this file). Falls back to the link below.
+LEADERBOARD_URL = (os.environ.get("LEADERBOARD_URL", "").strip()
+                   or "https://raccoon-bot.com/leaderboard/387708754814304260")
 PER_PAGE = "25"          # 10, 25 or 50 rows shown after the podium
 COLOR = 0x0EA5E9         # embed side-bar color (blue)
 MEDALS = ["🥇", "🥈", "🥉"]
@@ -119,7 +122,7 @@ def scrape():
 
 
 def esc(text: str) -> str:
-    return re.sub(r"([*_`~|>\\])", r"\\\1", text)
+    return re.sub(r"([*_`~|>\\\[\]])", r"\\\1", text)
 
 
 LRM = "‎"  # invisible left-to-right mark: keeps Arabic names from flipping the line
@@ -144,19 +147,25 @@ BAR_SIZE = 8          # length of the XP progress bar (number of blocks)
 PLAIN_NAME_IDS = {"1559658212419174500"}  # IDs that show a plain name instead of a @mention
 ID_OVERRIDES = {}      # fix a wrong/missing ID by name, e.g. {"isslam ali": "123456789012345678"}
                                           # (add the ID of anyone who shows up as a raw <@number>)
-USE_MENTIONS = True   # True: clickable @mentions (needs the member's Discord ID); False: plain names
+USE_MENTIONS = True   # True: make names clickable (needs the member's Discord ID); False: plain names
+TAG_STYLE = "link"    # "link"    = bold name that opens the member's Discord profile (same for everyone)
+                      # "mention" = blue @mention chip (can show @unknown-user for some viewers)
 
 
 def who(name: str, uid) -> str:
-    """Clickable mention if we have the Discord ID, otherwise the plain name."""
-    uid = ID_OVERRIDES.get((name or "").strip(), uid)
+    """Clickable profile link (or @mention) if we have the Discord ID, otherwise the plain name."""
+    name = (name or "").strip()
+    uid = ID_OVERRIDES.get(name, uid)
+    shown = ltr(esc(name[:28]))
     if USE_MENTIONS and uid and uid not in PLAIN_NAME_IDS:
-        return f"<@{uid}>"
-    return f"**{ltr(esc(name[:28]))}**"
+        if TAG_STYLE == "mention":
+            return f"<@{uid}>"
+        return f"**[{shown}](https://discord.com/users/{uid})**"
+    return f"**{shown}**"
 
 
 V2_FLAG = 1 << 15     # Discord "components v2" message flag (one card, free layout)
-MAX_TEXT = 3800       # Discord allows 4000 characters of text per v2 message
+MAX_TEXT = 3850       # Discord allows 4000 characters of text per v2 message
 
 
 def row_lines(data: dict):
@@ -258,6 +267,22 @@ def build_classic(data: dict, image_name=None) -> dict:
             "allowed_mentions": {"parse": []}}
 
 
+STATE_FILE = ".message_id"   # the workflow commits this file so the message is always found again
+
+
+def load_message_id() -> str:
+    try:
+        saved = open(STATE_FILE).read().strip()
+    except OSError:
+        saved = ""
+    return saved or os.environ.get("MESSAGE_ID", "").strip()
+
+
+def save_message_id(message_id: str):
+    with open(STATE_FILE, "w") as f:
+        f.write(message_id)
+
+
 def call(method, url, payload, png, image_name):
     if png:
         return requests.request(method, url, timeout=90,
@@ -268,7 +293,7 @@ def call(method, url, payload, png, image_name):
 
 def main():
     webhook = os.environ["WEBHOOK_URL"].split("?")[0].rstrip("/")
-    message_id = os.environ.get("MESSAGE_ID", "").strip()
+    message_id = load_message_id()
 
     data, png = scrape()
     print("Scraped podium:", data["podium"])
@@ -310,7 +335,9 @@ def main():
         print("One-card layout refused:", r.status_code, r.text[:300])
         r = call("POST", f"{webhook}?wait=true", classic, png, image_name)
     r.raise_for_status()
-    print("NEW MESSAGE ID (save this as the MESSAGE_ID variable):", r.json()["id"])
+    new_id = r.json()["id"]
+    save_message_id(new_id)
+    print("Posted a new message. Its ID was saved automatically:", new_id)
 
 
 if __name__ == "__main__":
