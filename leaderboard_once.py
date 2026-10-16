@@ -277,7 +277,7 @@ def split_tiers(rows, data=None):
             top, prev_last = chunk[0][0], chunk[0][0] - 1
             if top in xp and prev_last in xp:
                 need = max(1, xp[prev_last] - xp[top] + 1)
-                goal = f"  ·  \U0001F3AF **{need:,} XP** to reach {above[0]} {above[1]}"
+                goal = f"  ·  \U0001F3AF **{need:,} XP** to pass #{prev_last} and enter {above[1]}"
             groups.append((emoji, name, chunk, goal))
             above = (emoji, name)
     return groups
