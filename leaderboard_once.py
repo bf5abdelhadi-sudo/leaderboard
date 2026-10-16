@@ -142,7 +142,7 @@ def to_int(s: str) -> int:
     return int(d) if d else 0
 
 
-ROWS_PER_FIELD = 8
+ROWS_PER_FIELD = 6
 BAR_SIZE = 8          # length of the XP progress bar (number of blocks)
 PLAIN_NAME_IDS = {"1559658212419174500"}  # IDs that show a plain name instead of a @mention
 ID_OVERRIDES = {}      # fix a wrong/missing ID by name, e.g. {"isslam ali": "123456789012345678"}
@@ -152,11 +152,11 @@ TAG_STYLE = "link"    # "link"    = bold name that opens the member's Discord pr
                       # "mention" = blue @mention chip (can show @unknown-user for some viewers)
 
 
-def who(name: str, uid) -> str:
+def who(name: str, uid, shown_name=None) -> str:
     """Clickable profile link (or @mention) if we have the Discord ID, otherwise the plain name."""
     name = (name or "").strip()
     uid = ID_OVERRIDES.get(name, uid)
-    shown = ltr(esc(name[:28]))
+    shown = ltr(esc(shown_name if shown_name is not None else name[:28]))
     if USE_MENTIONS and uid and uid not in PLAIN_NAME_IDS:
         if TAG_STYLE == "mention":
             return f"<@{uid}>"
@@ -181,19 +181,95 @@ def parse_rows(data: dict):
     return out
 
 
-def stats(level, xp, pct) -> str:
-    """One tidy stats chip: level │ XP │ progress bar."""
-    return f"Lv {int(level)} │ {int(xp):,} XP │ {bar(pct, BAR_SIZE)} {pct}%"
+# ---- Lining up the stats column -------------------------------------------------
+# Discord names use a proportional font, so we estimate how wide each name is and
+# give it just enough "─" so every stats box starts in the same column.
+# Widths are in "em" (font size); ASCII values are bold sans-serif widths / 1000.
+_ASCII_W = [int(w) for w in (
+    "278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,"
+    "556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,"
+    "611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,"
+    "611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,"
+    "556,556,500,389,280,389,584").split(",")]
+DASH_EM = 0.55        # width of one character inside a `code` box, in em (measured in Discord)
+NAME_MAX_EM = 9.5     # names wider than this get shortened with "…" (about 16–18 letters)
+MIN_DASHES = 2        # even the longest name keeps at least this many "─"
+
+
+def char_em(ch: str) -> float:
+    import unicodedata
+    o = ord(ch)
+    if 32 <= o < 127:
+        return _ASCII_W[o - 32] / 1000
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf") \
+            or 0xFE00 <= o <= 0xFE0F or 0x1F3FB <= o <= 0x1F3FF:
+        return 0.0                                    # accents, skin tones, ZWJ, LRM ...
+    if o >= 0x1F000 or ch in _EMOJI_SYMBOLS:
+        return 1.75                                   # emoji
+    if unicodedata.east_asian_width(ch) in ("W", "F"):
+        return 1.0                                    # Chinese / Japanese / full-width
+    if 0x2190 <= o <= 0x2BFF:
+        return 0.9                                    # arrows, shapes, ♤, ▒ ... (plain symbols)
+    if 0x0600 <= o <= 0x06FF:
+        return 0.42                                   # Arabic letters (joined, narrow)
+    return 0.7                                        # other fancy letters (𝓭𝓻𝓲𝓿𝓮𝓻, 𝙉𝙀𝘿 ...)
+
+
+# Older symbols that Discord draws as big emoji even without the emoji marker (U+FE0F)
+_EMOJI_SYMBOLS = set("⌚⌛⏩⏪⏫⏬⏰⏳☔☕♈♉♊♋♌♍♎♏♐♑♒♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓❔❕❗➕➖➗➰➿⬛⬜⭐⭕")
+
+
+def text_em(text: str) -> float:
+    total, chars = 0.0, list(text)
+    for i, c in enumerate(chars):
+        nxt = chars[i + 1] if i + 1 < len(chars) else ""
+        total += 1.75 if nxt == "️" and ord(c) < 0x1F000 else char_em(c)   # ☯️ ♟️ ❤️ ...
+    return total
+
+
+def fit_name(name: str) -> str:
+    """Shortens a name with "…" if it is too wide for the column."""
+    name = (name or "").strip()[:28]
+    if text_em(name) <= NAME_MAX_EM:
+        return name
+    while name and text_em(name.rstrip() + "…") > NAME_MAX_EM:
+        name = name[:-1]
+    return name.rstrip() + "…"
+
+
+def leader(name: str, column_em: float) -> str:
+    n = round((column_em - text_em(name)) / DASH_EM)
+    return "─" * max(MIN_DASHES, n)
+
+
+def stats(level, xp, pct, xp_w=1) -> str:
+    """Fixed-width stats box, so the numbers inside line up too."""
+    return f"Lv {int(level):>2} │ {f'{int(xp):,}':>{xp_w}} XP │ {bar(pct, BAR_SIZE)} {pct:>3}%"
+
+
+def layout(data: dict):
+    """(column position, XP width) shared by Top 3 and the ranks, so both line up."""
+    names = [fit_name(r[1]) for r in parse_rows(data)] + [fit_name(m["name"] or "?") for m in data["podium"]]
+    column = max((text_em(n) for n in names), default=0) + MIN_DASHES * DASH_EM
+    xps = [r[4] for r in parse_rows(data)] + [int(m["xp"]) for m in data["podium"]]
+    return column, max((len(f"{x:,}") for x in xps), default=1)
+
+
+def line(prefix: str, name: str, uid, level, xp, pct, column, xp_w) -> str:
+    shown = fit_name(name)
+    return (f"{LRM}{prefix}  {who(name, uid, shown)} `{leader(shown, column)}` "
+            f"`{stats(level, xp, pct, xp_w)}`{LRM}")
 
 
 def row_lines(data: dict):
-    return [(rank, f"{LRM}`{rank:02d}`  {who(name, uid)}  ─  `{stats(level, xp, pct)}`{LRM}")
+    column, xp_w = layout(data)
+    return [(rank, line(f"`{rank:02d}`", name, uid, level, xp, pct, column, xp_w))
             for rank, name, uid, level, xp, pct in parse_rows(data)]
 
 
 def top3_lines(podium, data=None):
-    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ─  "
-            f"`{stats(m['level'], m['xp'], m['pct'])}`{LRM}"
+    column, xp_w = layout(data or {"rows": [], "podium": podium})
+    return [line(MEDALS[i], m["name"] or "?", m.get("uid"), m["level"], m["xp"], m["pct"], column, xp_w)
             for i, m in enumerate(podium)]
 
 
