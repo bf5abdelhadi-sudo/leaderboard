@@ -5,6 +5,13 @@ on:
     - cron: "*/15 * * * *"   # every 15 minutes (GitHub may delay runs a bit)
   workflow_dispatch:          # lets you run it manually from the Actions tab
 
+permissions:
+  contents: write             # lets the workflow save .ranks.json back to the repo
+
+concurrency:
+  group: leaderboard          # never run two updates at the same time
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -22,3 +29,15 @@ jobs:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           MESSAGE_ID: ${{ vars.MESSAGE_ID }}
         run: python leaderboard_once.py
+      - name: Save ranks (for the ▲▼ arrows)
+        run: |
+          git config user.name "leaderboard-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ranks.json .message_id 2>/dev/null || git add .ranks.json
+          if git diff --cached --quiet; then
+            echo "Nothing new to save"
+          else
+            git commit -m "Save leaderboard ranks"
+            git pull --rebase
+            git push
+          fi
