@@ -197,6 +197,30 @@ def top3_lines(podium, data=None):
             for i, m in enumerate(podium)]
 
 
+# The ranks under the Top 3 are split into small groups. Edit freely:
+# (first rank, last rank, emoji, name). Anyone ranked after the last group joins it.
+TIERS = [
+    (4, 10, "\U0001F525", "Elite"),          # 🔥
+    (11, 18, "\u26A1", "Challengers"),       # ⚡
+    (19, 999, "\U0001F331", "Rising"),       # 🌱
+]
+
+
+def split_tiers(rows):
+    """[(emoji, name, [(rank, line), ...])] — empty groups are skipped."""
+    groups = []
+    for first, last, emoji, name in TIERS:
+        chunk = [r for r in rows if first <= r[0] <= last]
+        if chunk:
+            groups.append((emoji, name, chunk))
+    return groups
+
+
+def tier_text(emoji, name, chunk):
+    return (f"### {emoji}  {name}\n-# Ranks {chunk[0][0]} – {chunk[-1][0]}\n"
+            + "\n".join(l for _, l in chunk))
+
+
 def sorted_podium(data):
     return sorted(data["podium"], key=lambda x: x["xp"], reverse=True)[:3]
 
@@ -218,10 +242,10 @@ def build_v2(data: dict, image_name=None) -> dict:
             f"-# \U0001F465  **{members}** members  ·  ✨ Ranked by experience")
     top = "## \U0001F451  Top 3\n" + "\n".join(top3_lines(podium, data))
 
-    def ranks_text(rs):
-        return f"### \U0001F4CB  Ranks {rs[0][0]} – {rs[-1][0]}\n" + "\n".join(l for _, l in rs)
+    def ranks_len(rs):
+        return sum(len(tier_text(*g)) for g in split_tiers(rs))
 
-    while rows and len(head) + len(top) + len(footer) + len(ranks_text(rows)) > MAX_TEXT:
+    while rows and len(head) + len(top) + len(footer) + ranks_len(rows) > MAX_TEXT:
         rows.pop()
 
     def txt(c):
@@ -235,8 +259,8 @@ def build_v2(data: dict, image_name=None) -> dict:
         comps.append({"type": 12, "items": [
             {"media": {"url": f"attachment://{image_name}"}, "description": "Top 3 podium"}]})
     comps += [sep(), txt(top)]
-    if rows:
-        comps += [sep(), txt(ranks_text(rows))]
+    for group in split_tiers(rows):
+        comps += [sep(), txt(tier_text(*group))]
     comps += [sep(), txt(footer)]
 
     return {
@@ -253,13 +277,14 @@ def build_classic(data: dict, image_name=None) -> dict:
     rows = row_lines(data)
     fields = [{"name": "\U0001F451  Top 3", "value": "\n".join(top3_lines(podium, data)) + "\n​",
                "inline": False}]
-    for n in range(0, len(rows), ROWS_PER_FIELD):
-        chunk = rows[n:n + ROWS_PER_FIELD]
-        fields.append({
-            "name": f"\U0001F4CB  Ranks {chunk[0][0]} – {chunk[-1][0]}",
-            "value": ("\n".join(l for _, l in chunk) + "\n​")[:1024],
-            "inline": False,
-        })
+    for emoji, name, group in split_tiers(rows):
+        for n in range(0, len(group), ROWS_PER_FIELD):
+            chunk = group[n:n + ROWS_PER_FIELD]
+            fields.append({
+                "name": f"{emoji}  {name}  ·  Ranks {chunk[0][0]} – {chunk[-1][0]}",
+                "value": ("\n".join(l for _, l in chunk) + "\n​")[:1024],
+                "inline": False,
+            })
     embed = {
         "title": f"\U0001F3C6  {data['title'] or 'Leaderboard'}",
         "url": LEADERBOARD_URL,
