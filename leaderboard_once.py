@@ -168,24 +168,39 @@ V2_FLAG = 1 << 15     # Discord "components v2" message flag (one card, free lay
 MAX_TEXT = 3850       # Discord allows 4000 characters of text per v2 message
 
 
-def row_lines(data: dict):
+def parse_rows(data: dict):
+    """[(rank, name, uid, level, xp, pct)] from the scraped table."""
     out = []
     for item in data["rows"]:
         cells = item["cells"]
         if len(cells) < 4:
             continue
-        rank, level, xp = to_int(cells[0]), to_int(cells[2]), to_int(cells[3])
         pm = re.search(r"(\d+)\s*%", cells[-1])
-        pct = int(pm.group(1)) if pm else 0
-        line = (f"{LRM}`{rank:02d}`  {who(cells[1], item.get('uid'))}  ·  "
-                f"Lvl {level}  ·  `{xp:,} XP`  `{bar(pct, BAR_SIZE)} {pct:>3}%`{LRM}")
-        out.append((rank, line))
+        out.append((to_int(cells[0]), cells[1], item.get("uid"), to_int(cells[2]),
+                    to_int(cells[3]), int(pm.group(1)) if pm else 0))
     return out
 
 
-def top3_lines(podium):
-    return [f"{LRM}{MEDALS[i]}  {who(m['name'] or '?', m.get('uid'))}  ·  "
-            f"Lvl {m['level']}  ·  **{m['xp']:,} XP**  `{bar(m['pct'], BAR_SIZE)} {m['pct']:>3}%`{LRM}"
+def stats(level, xp, pct, xp_w) -> str:
+    """Fixed-width stats chip, so every line lines up in a neat column."""
+    return f"Lv {int(level):>2} │ {f'{int(xp):,}':>{xp_w}} XP │ {bar(pct, BAR_SIZE)} {pct:>3}%"
+
+
+def xp_width(data: dict) -> int:
+    xps = [r[4] for r in parse_rows(data)] + [int(m["xp"]) for m in data["podium"]]
+    return max((len(f"{x:,}") for x in xps), default=1)
+
+
+def row_lines(data: dict):
+    w = xp_width(data)
+    return [(rank, f"{LRM}`{rank:02d} │ {stats(level, xp, pct, w)}`  {who(name, uid)}{LRM}")
+            for rank, name, uid, level, xp, pct in parse_rows(data)]
+
+
+def top3_lines(podium, data=None):
+    w = xp_width(data) if data else max((len(f"{int(m['xp']):,}") for m in podium), default=1)
+    return [f"{LRM}{MEDALS[i]} `{stats(m['level'], m['xp'], m['pct'], w)}`  "
+            f"{who(m['name'] or '?', m.get('uid'))}{LRM}"
             for i, m in enumerate(podium)]
 
 
@@ -203,10 +218,12 @@ def build_v2(data: dict, image_name=None) -> dict:
     members = data["members"] or "?"
     title = (data["title"] or "Leaderboard").strip()
     rows = row_lines(data)
-    footer = f"-# Updates automatically · raccoon-bot.com · last update <t:{int(time.time())}:R>"
+    now = int(time.time())
+    footer = f"-# \U0001F504  Updates automatically  ·  last update <t:{now}:R>  ·  <t:{now}:t>"
     link_title = title.replace("[", "(").replace("]", ")")
-    head = f"# \U0001F3C6  [{link_title}]({LEADERBOARD_URL})\n-# \U0001F465  **{members}** members · Ranked by experience"
-    top = "### \U0001F3C5  Top 3\n" + "\n".join(top3_lines(podium))
+    head = (f"# \U0001F3C6  [{link_title}]({LEADERBOARD_URL})\n"
+            f"-# \U0001F465  **{members}** members  ·  ✨ Ranked by experience")
+    top = "## \U0001F451  Top 3\n" + "\n".join(top3_lines(podium, data))
 
     def ranks_text(rs):
         return f"### \U0001F4CB  Ranks {rs[0][0]} – {rs[-1][0]}\n" + "\n".join(l for _, l in rs)
@@ -227,7 +244,7 @@ def build_v2(data: dict, image_name=None) -> dict:
     comps += [sep(), txt(top)]
     if rows:
         comps += [sep(), txt(ranks_text(rows))]
-    comps += [sep(False), txt(footer)]
+    comps += [sep(), txt(footer)]
 
     return {
         "flags": V2_FLAG,
@@ -241,7 +258,7 @@ def build_classic(data: dict, image_name=None) -> dict:
     """Fallback: ONE normal embed (the picture can only sit at its bottom)."""
     podium = sorted_podium(data)
     rows = row_lines(data)
-    fields = [{"name": "\U0001F3C6  Top 3", "value": "\n".join(top3_lines(podium)) + "\n​",
+    fields = [{"name": "\U0001F451  Top 3", "value": "\n".join(top3_lines(podium, data)) + "\n​",
                "inline": False}]
     for n in range(0, len(rows), ROWS_PER_FIELD):
         chunk = rows[n:n + ROWS_PER_FIELD]
@@ -256,7 +273,7 @@ def build_classic(data: dict, image_name=None) -> dict:
         "description": f"\U0001F465  **{data['members'] or '?'}** members   ·   Ranked by experience\n​",
         "color": COLOR,
         "fields": fields,
-        "footer": {"text": "Updates automatically · raccoon-bot.com"},
+        "footer": {"text": "\U0001F504  Updates automatically"},
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     if image_name:
